@@ -1,0 +1,2 @@
+conda env:
+conda activate D:\conda_envs\paf_predict

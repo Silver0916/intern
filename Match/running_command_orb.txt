@@ -1,0 +1,14 @@
+conda env:
+conda activate D:\conda_envs\paf_predict
+
+# run all scenes
+python .\ORB\orb_run.py `
+  --dataset_path "D:\intern_dataset\hpatches-sequences-release" `
+  --output_root "D:\projs\intern\ORB\output"
+
+# run single scene
+python .\ORB\orb_run.py `
+  --dataset_path "D:\intern_dataset\hpatches-sequences-release" `
+  --output_root "D:\projs\intern\ORB\output" `
+  --single_scene `
+  --scene "v_maskedman"

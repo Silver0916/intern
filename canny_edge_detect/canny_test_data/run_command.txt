@@ -1,0 +1,1 @@
+python .\canny_edge_detect\canny.py --input_image D:\projs\intern\canny_edge_detect\canny_test_data\2018.jpg
