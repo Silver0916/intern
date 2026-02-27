@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "SIFT"))
 
 from orb_match import ORB_feature_matching
 from SIFT_match import SIFT_feature_matching
-from GT_compute import GT_compute
+from GT_validation import GT_compute
 
 # ----------- Default paths -----------
 DATASET_DIR    = Path(r"D:\intern_dataset\hpatches-sequences-release")
@@ -34,9 +34,10 @@ EVAL_OUTPUT_DIR = Path(r"D:\projs\intern\Match\eval\output")
 FIELDNAMES = [
     "algorithm", "scene", "scene_type", "pair_idx",
     "kp1", "kp2", "good_matches", "inliers", "inlier_ratio",
-    "correct_matches", "total_good_matches", "correct_match_ratio",
-    "homo_inliers", "homo_inlier_ratio", "homo_mean_error_px", "homo_success",
-    "repeatability",
+    "correct_matches", "total_good_matches", "good_matches_accuracy",
+    "homo_inliers", "estimated_homography_accuracy", "estimated_homography_mean_error_px", "estimated_homography_success",
+    "gt_inliers", "gt_inlier_accuracy", "gt_mean_error_px",
+    "repeatability", "repeatability_flann", "repeatability_strict",
     "t_detect", "t_desc", "t_match",
     "status", "reason",
 ]
@@ -108,23 +109,30 @@ def evaluate_all(
                             correct_thr_px=correct_thr_px,
                         )
 
+                        kp1_list = match_result.get("kps1", match_result.get("kp1", []))
+                        kp2_list = match_result.get("kps2", match_result.get("kp2", []))
                         inlier_count = int(match_result["inlier_mask"].sum())
                         good_count = len(match_result["good_pts1"])
 
                         row.update({
-                            "kp1": len(match_result["kp1"]),
-                            "kp2": len(match_result["kp2"]),
+                            "kp1": len(kp1_list),
+                            "kp2": len(kp2_list),
                             "good_matches": good_count,
                             "inliers": inlier_count,
                             "inlier_ratio": f"{inlier_count / good_count:.6f}" if good_count > 0 else "0",
                             "correct_matches": gt_metrics["correct_matches"],
                             "total_good_matches": gt_metrics["total_good_matches"],
-                            "correct_match_ratio": f"{gt_metrics['correct_match_ratio']:.6f}",
+                            "good_matches_accuracy": f"{gt_metrics['good_matches_accuracy']:.6f}",
                             "homo_inliers": gt_metrics["homo_inliers"],
-                            "homo_inlier_ratio": f"{gt_metrics['homo_inlier_ratio']:.6f}",
-                            "homo_mean_error_px": f"{gt_metrics['homo_mean_error_px']:.4f}",
-                            "homo_success": gt_metrics["homo_success"],
+                            "estimated_homography_accuracy": f"{gt_metrics['estimated_homography_accuracy']:.6f}",
+                            "estimated_homography_mean_error_px": f"{gt_metrics['estimated_homography_mean_error_px']:.4f}",
+                            "estimated_homography_success": gt_metrics["estimated_homography_success"],
+                            "gt_inliers": gt_metrics["gt_inliers"],
+                            "gt_inlier_accuracy": f"{gt_metrics['gt_inlier_accuracy']:.6f}",
+                            "gt_mean_error_px": f"{gt_metrics['gt_mean_error_px']:.4f}",
                             "repeatability": f"{gt_metrics['repeatability']:.6f}" if gt_metrics["repeatability"] is not None else "",
+                            "repeatability_flann": f"{gt_metrics['repeatability_flann']:.6f}" if gt_metrics["repeatability_flann"] is not None else "",
+                            "repeatability_strict": f"{gt_metrics['repeatability_strict']:.6f}" if gt_metrics["repeatability_strict"] is not None else "",
                             "t_detect": f"{match_result['t_detect']:.6f}",
                             "t_desc": f"{match_result['t_desc']:.6f}",
                             "t_match": f"{match_result['t_match']:.6f}",

@@ -55,7 +55,27 @@ def _points_inside_image(pts_nx2: np.ndarray, width: int, height: int) -> np.nda
     return x_ok & y_ok
 
 
-def repeatibility_flann(gt_homo: np.ndarray, kp1_pts: np.ndarray, kp2_pts: np.ndarray, img2_hw: tuple[int, int], dist_thr_px: float) -> float:
+def _extract_keypoint_points(match_result: dict) -> tuple[np.ndarray | None, np.ndarray | None]:
+    kp1 = match_result.get("kps1", match_result.get("kp1"))
+    kp2 = match_result.get("kps2", match_result.get("kp2"))
+    if kp1 is None or kp2 is None:
+        return None, None
+    kp1_pts = np.float32([kp.pt for kp in kp1]).reshape(-1, 2)
+    kp2_pts = np.float32([kp.pt for kp in kp2]).reshape(-1, 2)
+    return kp1_pts, kp2_pts
+
+
+def _safe_mean(values: np.ndarray) -> float:
+    return float(np.mean(values)) if len(values) > 0 else float("nan")
+
+
+def compute_repeatability_flann(
+    gt_homo: np.ndarray,
+    kp1_pts: np.ndarray,
+    kp2_pts: np.ndarray,
+    img2_hw: tuple[int, int],
+    dist_thr_px: float,
+) -> float:
     kp1_pts = _as_nx2(np.asarray(kp1_pts, dtype=np.float32))
     kp2_pts = _as_nx2(np.asarray(kp2_pts, dtype=np.float32))
     if len(kp1_pts) == 0 or len(kp2_pts) == 0:
@@ -66,18 +86,62 @@ def repeatibility_flann(gt_homo: np.ndarray, kp1_pts: np.ndarray, kp2_pts: np.nd
     proj_kp1 = _project_points(gt_homo, kp1_pts)
     kp1_visible = _points_inside_image(proj_kp1, w2, h2)
     proj_kp1_vis = proj_kp1[kp1_visible]
+    if len(proj_kp1_vis) == 0:
+        return 0.0
 
     # FLANN match
-    index_params = dict(algorithm = 1,trees = 4)
-    search_params = dict(checks = 32)
+    index_params = dict(algorithm=1, trees=4)
+    search_params = dict(checks=32)
     flann = cv2.FlannBasedMatcher(index_params, search_params)
     matches = flann.knnMatch(proj_kp1_vis, kp2_pts, k=1)
     repeated_matches = []
     for m in matches:
-        if m.distance < dist_thr_px:
+        if len(m) > 0 and m[0].distance < dist_thr_px:
             repeated_matches.append(m)
 
     return len(repeated_matches) / len(kp1_pts)
+
+
+def compute_repeatability_strict(
+    gt_homo: np.ndarray,
+    kp1_pts: np.ndarray,
+    kp2_pts: np.ndarray,
+    img1_hw: tuple[int, int],
+    img2_hw: tuple[int, int],
+    dist_thr_px: float,
+) -> float:
+    kp1_pts = _as_nx2(np.asarray(kp1_pts, dtype=np.float32))
+    kp2_pts = _as_nx2(np.asarray(kp2_pts, dtype=np.float32))
+    if len(kp1_pts) == 0 or len(kp2_pts) == 0:
+        return 0.0
+
+    h1, w1 = img1_hw
+    h2, w2 = img2_hw
+
+    proj_kp1 = _project_points(gt_homo, kp1_pts)
+    kp1_visible = _points_inside_image(proj_kp1, w2, h2)
+    proj_kp1_vis = proj_kp1[kp1_visible]
+
+    inv_h = np.linalg.inv(gt_homo)
+    backproj_kp2 = _project_points(inv_h, kp2_pts)
+    kp2_visible = _points_inside_image(backproj_kp2, w1, h1)
+    kp2_vis = kp2_pts[kp2_visible]
+
+    if len(proj_kp1_vis) == 0 or len(kp2_vis) == 0:
+        return 0.0
+
+    diffs = proj_kp1_vis[:, np.newaxis, :] - kp2_vis[np.newaxis, :, :]
+    dists = np.linalg.norm(diffs, axis=2)
+
+    nn12 = np.argmin(dists, axis=1)
+    nn21 = np.argmin(dists, axis=0)
+    idx1 = np.arange(len(proj_kp1_vis))
+    mutual = idx1 == nn21[nn12]
+    close = dists[idx1, nn12] < dist_thr_px
+    repeatable = int(np.sum(mutual & close))
+
+    denom = min(len(proj_kp1_vis), len(kp2_vis))
+    return float(repeatable / denom) if denom > 0 else 0.0
 
 
 def GT_compute(
@@ -122,10 +186,11 @@ def GT_compute(
     est_correct_mask = est_errors < homography_success_thr_px
     est_correct_matches = int(np.sum(est_correct_mask))
     est_accuracy = float(est_correct_matches / len(ref_pts)) if len(ref_pts) > 0 else 0.0
+    est_mean_error = _safe_mean(est_errors)
     homo_success = (
-    est_correct_matches >= min_inliers
-    and np.mean(est_errors) < homography_success_thr_px
-)
+        est_correct_matches >= min_inliers
+        and est_mean_error < homography_success_thr_px
+    )
 
     # ---------------- accuracy of estimated homography on RANSAC inliers ----------------
     ransac_inliers = _as_nx2(match_result["good_pts1"][match_result["inlier_mask"]])
@@ -135,22 +200,34 @@ def GT_compute(
     ransac_correct_mask = ransac_errors < homography_success_thr_px
     ransac_correct_matches = int(np.sum(ransac_correct_mask))
     ransac_accuracy = float(ransac_correct_matches / len(ransac_inliers)) if len(ransac_inliers) > 0 else 0.0
+    ransac_mean_error = _safe_mean(ransac_errors)
 
     # --- Repeatability ---
     repeatability = None
-    if "kps1" in match_result and "kps2" in match_result:
-        kp1_pts = np.float32([kp.pt for kp in match_result["kps1"]]).reshape(-1, 2)
-        kp2_pts = np.float32([kp.pt for kp in match_result["kps2"]]).reshape(-1, 2)
+    repeatability_flann = None
+    repeatability_strict = None
+    kp1_pts, kp2_pts = _extract_keypoint_points(match_result)
+    if kp1_pts is not None and kp2_pts is not None:
+        img1 = cv2.imread(str(gt_path.parent / ref_img), cv2.IMREAD_GRAYSCALE)
         img2 = cv2.imread(str(gt_path.parent / target_img), cv2.IMREAD_GRAYSCALE)
-        if img2 is None:
+        if img1 is None or img2 is None:
             raise FileNotFoundError(f"Failed to read images for repeatability: {ref_img}, {target_img}")
-        repeatability = repeatibility_flann(
-                        gt_homo, 
-                        kp1_pts, 
-                        kp2_pts, 
-                        img2.shape[:2], 
-                        correct_thr_px
-                        )
+        repeatability_flann = compute_repeatability_flann(
+            gt_homo=gt_homo,
+            kp1_pts=kp1_pts,
+            kp2_pts=kp2_pts,
+            img2_hw=img2.shape[:2],
+            dist_thr_px=correct_thr_px,
+        )
+        repeatability_strict = compute_repeatability_strict(
+            gt_homo=gt_homo,
+            kp1_pts=kp1_pts,
+            kp2_pts=kp2_pts,
+            img1_hw=img1.shape[:2],
+            img2_hw=img2.shape[:2],
+            dist_thr_px=correct_thr_px,
+        )
+        repeatability = repeatability_flann
 
     return {
         "correct_matches": correct_matches,
@@ -158,12 +235,14 @@ def GT_compute(
         "good_matches_accuracy": gm_accuracy,
         "homo_inliers": est_correct_matches,
         "estimated_homography_accuracy": est_accuracy,
-        "estimated_homography_mean_error_px": float(np.mean(est_errors)),
+        "estimated_homography_mean_error_px": est_mean_error,
         "estimated_homography_success": homo_success,
         "gt_inliers": ransac_correct_matches,
         "gt_inlier_accuracy": ransac_accuracy,
-        "gt_mean_error_px": float(np.mean(ransac_errors)),
+        "gt_mean_error_px": ransac_mean_error,
         "repeatability": repeatability,
+        "repeatability_flann": repeatability_flann,
+        "repeatability_strict": repeatability_strict,
     }
 
 
