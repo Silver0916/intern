@@ -1,0 +1,16 @@
+{
+  "python.defaultInterpreterPath": "D:\\conda_envs\\paf_predict\\python.exe",
+  "python.terminal.activateEnvironment": true,
+
+  "terminal.integrated.profiles.windows": {
+    "PowerShell (paf_predict)": {
+      "source": "PowerShell",
+      "args": [
+        "-NoExit",
+        "-Command",
+        "conda activate \"D:\\conda_envs\\paf_predict\""
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "PowerShell (paf_predict)"
+}

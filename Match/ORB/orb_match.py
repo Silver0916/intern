@@ -7,7 +7,34 @@ import time
 
 # all_files = sorted((DATASET_DIR/SCENE).rglob('*.png'))
 
-def ORB_feature_matching(img1_path, img2_path, output_dir, nfeatures=1500, fastThreshold=20, scaleFactor=1.2, nlevels=8, low_ratio=0.75, ransac_reproj_thr=5.0,show = False, return_points = False):
+def ORB_feature_matching(img1_path, 
+                        img2_path, 
+                        output_dir, nfeatures=1500, 
+                        fastThreshold=20, 
+                        scaleFactor=1.2, 
+                        nlevels=8, low_ratio=0.75, 
+                        ransac_reproj_thr=5.0,
+                        show = False, 
+                        return_points = False) -> dict | None:
+    """
+    ORB feature matching
+    
+    Args:
+        img1_path: path to the first image
+        img2_path: path to the second image.
+        output_dir: path to the output directory.
+        nfeatures: number of features to retain.
+        fastThreshold: FAST threshold for ORB.
+        scaleFactor: pyramid decimation ratio.
+        nlevels: number of pyramid levels.
+        low_ratio: low ratio for filtering matches.
+        ransac_reproj_thr: RANSAC reprojection threshold.
+        show: whether to display the matches.
+        return_points: whether to return the points.
+    Returns:
+        dict: dictionary containing the results of the feature matching.
+    """
+    
     img1_bgr = cv2.imread(str(img1_path))
     img2_bgr = cv2.imread(str(img2_path))
 
@@ -20,8 +47,16 @@ def ORB_feature_matching(img1_path, img2_path, output_dir, nfeatures=1500, fastT
 
     #   ---ORB feature detection and description---
     orb = cv2.ORB_create(nfeatures = nfeatures,    fastThreshold=fastThreshold,    scaleFactor=scaleFactor,    nlevels=nlevels)
-    kps1, des1 = orb.detectAndCompute(gray1, None)
-    kps2, des2 = orb.detectAndCompute(gray2, None)
+
+    t0 = time.perf_counter()
+    kps1 = orb.detect(gray1, None)
+    kps2 = orb.detect(gray2, None)
+    t_detect = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    kps1, des1 = orb.compute(gray1, kps1)
+    kps2, des2 = orb.compute(gray2, kps2)
+    t_desc = time.perf_counter() - t0
 
     if des1 is None or des2 is None:
         raise RuntimeError("ORB failed to compute descriptors (des1/des2 is None).")
@@ -32,8 +67,9 @@ def ORB_feature_matching(img1_path, img2_path, output_dir, nfeatures=1500, fastT
 
     #   ---Brute-Force matcher with Hamming distance and cross-checking---
     bf = cv2.BFMatcher(cv2.NORM_HAMMING)
-    knn_matches = bf.knnMatch(des1, des2, k=2)
 
+    t0 = time.perf_counter()
+    knn_matches = bf.knnMatch(des1, des2, k=2)
     # apply ratio test to filter matches
     good_matches = []
     for pair in knn_matches:
@@ -43,6 +79,7 @@ def ORB_feature_matching(img1_path, img2_path, output_dir, nfeatures=1500, fastT
             m, n = pair
             if m.distance < low_ratio * n.distance:
                 good_matches.append(m)
+    t_match = time.perf_counter() - t0
 
     print("Good matches after ratio test:", len(good_matches))
 
@@ -90,17 +127,26 @@ def ORB_feature_matching(img1_path, img2_path, output_dir, nfeatures=1500, fastT
     # return results
     if return_points:
         return {
-                "good_pts1": src_pts, 
+                
+                "good_pts1": src_pts,
                 "good_pts2": dst_pts,
-                "inlier_mask": mask, 
-                "H": H
+                "inlier_mask": mask,
+                "H": H,
+                "kps1": kps1,
+                "kps2": kps2,
+                "t_detect": t_detect,
+                "t_desc": t_desc,
+                "t_match": t_match,
                 }
     else:
         return {"kp1": len(kps1),
-                "kp2": len(kps2), 
-                "good_matches": len(good_matches), 
-                "inliers": len(inlier_matches), 
-                "inlier_ratio": inlier_ratio, 
+                "kp2": len(kps2),
+                "good_matches": len(good_matches),
+                "inliers": len(inlier_matches),
+                "inlier_ratio": inlier_ratio,
+                "t_detect": t_detect,
+                "t_desc": t_desc,
+                "t_match": t_match,
                 }
 
 def process_scene(scene: str | Path, 
@@ -118,7 +164,7 @@ def process_scene(scene: str | Path,
 
     # prepare csv file for recording results
     csv_path = scene_out_dir / "results.csv"
-    fieldnames = ["scene","pair","kp1","kp2","good_matches","inliers","inlier_ratio","status","reason"]
+    fieldnames = ["scene","pair","kp1","kp2","good_matches","inliers","inlier_ratio","t_detect","t_desc","t_match","status","reason"]
     
     # read all images in the scene
     img_list = sorted((dataset_path/scene).rglob('*.ppm'))
@@ -161,6 +207,9 @@ def process_scene(scene: str | Path,
                             'good_matches': results['good_matches'],
                             'inliers': results['inliers'],
                             'inlier_ratio': f"{results['inlier_ratio']:.6f}",
+                            't_detect': f"{results['t_detect']:.6f}",
+                            't_desc': f"{results['t_desc']:.6f}",
+                            't_match': f"{results['t_match']:.6f}",
                             'status': 'warning',
                             'reason': f"Low inlier ratio ({results['inlier_ratio']:.6f}) or few inliers ({results['inliers']})",
                         }
@@ -176,6 +225,9 @@ def process_scene(scene: str | Path,
                         'good_matches': results['good_matches'],
                         'inliers': results['inliers'],
                         'inlier_ratio': f"{results['inlier_ratio']:.6f}",
+                        't_detect': f"{results['t_detect']:.6f}",
+                        't_desc': f"{results['t_desc']:.6f}",
+                        't_match': f"{results['t_match']:.6f}",
                         'status': 'success',
                         'reason':'',
                         }
@@ -190,8 +242,11 @@ def process_scene(scene: str | Path,
                     'good_matches': '',
                     'inliers': '',
                     'inlier_ratio': '',
+                    't_detect': '',
+                    't_desc': '',
+                    't_match': '',
                     'status': 'failure',
-                    'reason': str(e),   
+                    'reason': str(e),
                 })
                 print(f"Error processing pair {img1_path.name} and {img2_path.name}: {e}")
                 continue

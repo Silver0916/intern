@@ -44,8 +44,40 @@ def _as_nx2(points: np.ndarray) -> np.ndarray:
 
 
 def _project_points(H: np.ndarray, pts_nx2: np.ndarray) -> np.ndarray:
-    pts = _as_nx2(pts_nx2).reshape(-1, 1, 2)
+    pts = _as_nx2(pts_nx2)
     return cv2.perspectiveTransform(pts, H).reshape(-1, 2)
+
+
+def _points_inside_image(pts_nx2: np.ndarray, width: int, height: int) -> np.ndarray:
+    pts = _as_nx2(pts_nx2)
+    x_ok = (pts[:, 0] >= 0) & (pts[:, 0] < width)
+    y_ok = (pts[:, 1] >= 0) & (pts[:, 1] < height)
+    return x_ok & y_ok
+
+
+def repeatibility_flann(gt_homo: np.ndarray, kp1_pts: np.ndarray, kp2_pts: np.ndarray, img2_hw: tuple[int, int], dist_thr_px: float) -> float:
+    kp1_pts = _as_nx2(np.asarray(kp1_pts, dtype=np.float32))
+    kp2_pts = _as_nx2(np.asarray(kp2_pts, dtype=np.float32))
+    if len(kp1_pts) == 0 or len(kp2_pts) == 0:
+        return 0.0
+
+    h2, w2 = img2_hw
+    # project kp1 to img2
+    proj_kp1 = _project_points(gt_homo, kp1_pts)
+    kp1_visible = _points_inside_image(proj_kp1, w2, h2)
+    proj_kp1_vis = proj_kp1[kp1_visible]
+
+    # FLANN match
+    index_params = dict(algorithm = 1,trees = 4)
+    search_params = dict(checks = 32)
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+    matches = flann.knnMatch(proj_kp1_vis, kp2_pts, k=1)
+    repeated_matches = []
+    for m in matches:
+        if m.distance < dist_thr_px:
+            repeated_matches.append(m)
+
+    return len(repeated_matches) / len(kp1_pts)
 
 
 def GT_compute(
@@ -78,21 +110,60 @@ def GT_compute(
     target_pts = _as_nx2(match_result['good_pts2'])
     gt_target_pts = _project_points(gt_homo, ref_pts)
 
-    #for good matches 
+    # ---------------- match accuracy of good matches ----------------
     gt_errors = np.linalg.norm(gt_target_pts - target_pts, axis=1)
     correct_mask = gt_errors < correct_thr_px
     correct_matches = int(np.sum(correct_mask))
-    correct_match_ratio = float(correct_matches / len(ref_pts)) if len(ref_pts) > 0 else 0.0
+    gm_accuracy = float(correct_matches / len(ref_pts)) if len(ref_pts) > 0 else 0.0
 
-    # evaluate H_est
-    est_pts = cv2.perspectiveTransform(ref_pts,match_result['H'])
-    est_errors = np.linalg.norm(est_pts - ref_pts)
+    # ---------------- accuracy of estimated homography on good matche points ----------------
+    est_pts = _project_points(match_result["H"], ref_pts)
+    est_errors = np.linalg.norm(est_pts - gt_target_pts, axis=1)
     est_correct_mask = est_errors < homography_success_thr_px
     est_correct_matches = int(np.sum(est_correct_mask))
-    est_correct_match_ratio = float(est_correct_matches/len(ref_pts) if len(ref_pts) > 0 else 0.0)
+    est_accuracy = float(est_correct_matches / len(ref_pts)) if len(ref_pts) > 0 else 0.0
+    homo_success = (
+    est_correct_matches >= min_inliers
+    and np.mean(est_errors) < homography_success_thr_px
+)
+
+    # ---------------- accuracy of estimated homography on RANSAC inliers ----------------
+    ransac_inliers = _as_nx2(match_result["good_pts1"][match_result["inlier_mask"]])
+    ransac_pts = _project_points(match_result["H"], ransac_inliers)
+    ransac_gt_pts = _project_points(gt_homo, ransac_inliers)
+    ransac_errors = np.linalg.norm(ransac_pts - ransac_gt_pts, axis=1)
+    ransac_correct_mask = ransac_errors < homography_success_thr_px
+    ransac_correct_matches = int(np.sum(ransac_correct_mask))
+    ransac_accuracy = float(ransac_correct_matches / len(ransac_inliers)) if len(ransac_inliers) > 0 else 0.0
+
+    # --- Repeatability ---
+    repeatability = None
+    if "kps1" in match_result and "kps2" in match_result:
+        kp1_pts = np.float32([kp.pt for kp in match_result["kps1"]]).reshape(-1, 2)
+        kp2_pts = np.float32([kp.pt for kp in match_result["kps2"]]).reshape(-1, 2)
+        img2 = cv2.imread(str(gt_path.parent / target_img), cv2.IMREAD_GRAYSCALE)
+        if img2 is None:
+            raise FileNotFoundError(f"Failed to read images for repeatability: {ref_img}, {target_img}")
+        repeatability = repeatibility_flann(
+                        gt_homo, 
+                        kp1_pts, 
+                        kp2_pts, 
+                        img2.shape[:2], 
+                        correct_thr_px
+                        )
 
     return {
-        
+        "correct_matches": correct_matches,
+        "total_good_matches": len(ref_pts),
+        "good_matches_accuracy": gm_accuracy,
+        "homo_inliers": est_correct_matches,
+        "estimated_homography_accuracy": est_accuracy,
+        "estimated_homography_mean_error_px": float(np.mean(est_errors)),
+        "estimated_homography_success": homo_success,
+        "gt_inliers": ransac_correct_matches,
+        "gt_inlier_accuracy": ransac_accuracy,
+        "gt_mean_error_px": float(np.mean(ransac_errors)),
+        "repeatability": repeatability,
     }
 
 
