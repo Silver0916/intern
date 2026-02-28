@@ -44,8 +44,9 @@ def _as_nx2(points: np.ndarray) -> np.ndarray:
 
 
 def _project_points(H: np.ndarray, pts_nx2: np.ndarray) -> np.ndarray:
-    pts = _as_nx2(pts_nx2)
-    return cv2.perspectiveTransform(pts, H).reshape(-1, 2)
+    # cv2.perspectiveTransform expects 2D points in shape (N, 1, 2).
+    pts = _as_nx2(pts_nx2).reshape(-1, 1, 2)
+    return cv2.perspectiveTransform(pts, np.asarray(H, dtype=np.float64)).reshape(-1, 2)
 
 
 def _points_inside_image(pts_nx2: np.ndarray, width: int, height: int) -> np.ndarray:
