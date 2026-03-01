@@ -7,7 +7,7 @@ import time
 
 
 def SIFT_feature_matching(img1_path, img2_path, output_dir,
-                           nfeatures=0, nOctaveLayers=3,
+                           nfeatures=1500, nOctaveLayers=3,
                            contrastThreshold=0.04, edgeThreshold=10,
                            sigma=1.6, low_ratio=0.75,
                            ransac_reproj_thr=5.0, show=False,
@@ -242,7 +242,7 @@ if __name__ == '__main__':
     parser.add_argument('--scene', type=str, default=r'v_bark', help='Scene name to process')
     parser.add_argument('--output_root', type=str, default=r'D:\projs\intern\Match\SIFT\output', help='Path to the output directory')
     # SIFT parameters
-    parser.add_argument('--nfeatures', type=int, default=0, help='Number of features (0 = unlimited)')
+    parser.add_argument('--nfeatures', type=int, default=1500, help='Number of features to retain')
     parser.add_argument('--nOctaveLayers', type=int, default=3, help='Number of octave layers')
     parser.add_argument('--contrastThreshold', type=float, default=0.04, help='Contrast threshold for filtering weak features')
     parser.add_argument('--edgeThreshold', type=int, default=10, help='Edge threshold for filtering edge-like features')

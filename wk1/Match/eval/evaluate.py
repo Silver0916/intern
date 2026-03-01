@@ -49,6 +49,9 @@ def evaluate_all(
     sift_output_root: Path = SIFT_OUT_ROOT,
     eval_output_dir: Path = EVAL_OUTPUT_DIR,
     correct_thr_px: float = 3.0,
+    nfeatures: int = 1500,
+    low_ratio: float = 0.75,
+    ransac_reproj_thr: float = 5.0,
 ) -> Path:
     """
     Run ORB and SIFT matching with GT evaluation on all scenes and pairs.
@@ -98,8 +101,14 @@ def evaluate_all(
                     }
 
                     try:
+                        # Keep shared matcher settings aligned for fair ORB vs SIFT comparison.
                         match_result = match_fn(
-                            ref_img_path, target_img_path, pair_out_dir,
+                            ref_img_path,
+                            target_img_path,
+                            pair_out_dir,
+                            nfeatures=nfeatures,
+                            low_ratio=low_ratio,
+                            ransac_reproj_thr=ransac_reproj_thr,
                             return_points=True,
                         )
 
@@ -165,6 +174,12 @@ if __name__ == "__main__":
                         help="Directory where eval_results.csv will be saved.")
     parser.add_argument("--correct_thr_px", type=float, default=3.0,
                         help="Pixel threshold for a match to be considered correct (default: 3.0).")
+    parser.add_argument("--nfeatures", type=int, default=1500,
+                        help="Shared feature cap for both ORB and SIFT (default: 1500).")
+    parser.add_argument("--low_ratio", type=float, default=0.75,
+                        help="Shared Lowe ratio threshold for both ORB and SIFT (default: 0.75).")
+    parser.add_argument("--ransac_reproj_thr", type=float, default=5.0,
+                        help="Shared RANSAC reprojection threshold for both ORB and SIFT (default: 5.0).")
     args = parser.parse_args()
 
     evaluate_all(
@@ -173,4 +188,7 @@ if __name__ == "__main__":
         sift_output_root=Path(args.sift_output_root),
         eval_output_dir=Path(args.eval_output_dir),
         correct_thr_px=args.correct_thr_px,
+        nfeatures=args.nfeatures,
+        low_ratio=args.low_ratio,
+        ransac_reproj_thr=args.ransac_reproj_thr,
     )
