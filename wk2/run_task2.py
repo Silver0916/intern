@@ -23,7 +23,7 @@ if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
 from visualize_trajectory import render_trajectory_plots
-from vo_monocular import run_monocular_vo
+from vo_mono import run_monocular_vo
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

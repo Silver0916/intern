@@ -17,9 +17,36 @@ def _load_positions(csv_path: Path) -> dict[int, np.ndarray]:
     """Load per-frame 3D positions from a pose CSV file."""
     positions: dict[int, np.ndarray] = {}
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
-        for row in csv.DictReader(f):
-            frame = int(row["frame"])
-            positions[frame] = np.array([float(row["tx"]), float(row["ty"]), float(row["tz"])], dtype=np.float64)
+        for raw_row in csv.DictReader(f):
+            row = {str(k).strip(): ("" if v is None else str(v).strip()) for k, v in raw_row.items()}
+
+            frame_val = None
+            for key in ["frame", "#timestamp", "#timestamp [ns]", "timestamp", "timestamp [ns]"]:
+                if key in row and row[key] != "":
+                    frame_val = row[key]
+                    break
+
+            tx_val = None
+            ty_val = None
+            tz_val = None
+            for key in ["tx", "p_RS_R_x [m]", "p_RS_R_x"]:
+                if key in row and row[key] != "":
+                    tx_val = row[key]
+                    break
+            for key in ["ty", "p_RS_R_y [m]", "p_RS_R_y"]:
+                if key in row and row[key] != "":
+                    ty_val = row[key]
+                    break
+            for key in ["tz", "p_RS_R_z [m]", "p_RS_R_z"]:
+                if key in row and row[key] != "":
+                    tz_val = row[key]
+                    break
+
+            if frame_val is None or tx_val is None or ty_val is None or tz_val is None:
+                continue
+
+            frame = int(frame_val)
+            positions[frame] = np.array([float(tx_val), float(ty_val), float(tz_val)], dtype=np.float64)
     return positions
 
 
