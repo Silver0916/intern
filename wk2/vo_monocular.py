@@ -23,6 +23,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import yaml
+import pandas as pd
 
 
 def _read_intrinsics(path: Path) -> np.ndarray:
@@ -32,19 +33,6 @@ def _read_intrinsics(path: Path) -> np.ndarray:
 
     if not isinstance(data, dict):
         raise ValueError(f"Intrinsics file {path} does not contain a YAML mapping")
-
-    if "K" in data:
-        k_raw = data["K"]
-        if isinstance(k_raw, dict) and "data" in k_raw:
-            k = np.asarray(k_raw["data"], dtype=np.float64)
-        else:
-            k = np.asarray(k_raw, dtype=np.float64)
-
-        if k.shape == (9,):
-            k = k.reshape(3, 3)
-        if k.shape != (3, 3):
-            raise ValueError(f"Invalid K shape in {path}: {k.shape}")
-        return k
 
     if "intrinsics" in data:
         intrinsics = np.asarray(data["intrinsics"], dtype=np.float64).reshape(-1)
@@ -60,7 +48,29 @@ def _read_intrinsics(path: Path) -> np.ndarray:
             dtype=np.float64,
         )
 
-    raise ValueError(f"Intrinsics file {path} must contain K, intrinsics[fu,fv,cu,cv], or fx/fy/cx/cy")
+    raise ValueError(f"Intrinsics file {path} must contain intrinsics[fu,fv,cu,cv], or fx/fy/cx/cy")
+
+
+def _read_distortion_coeffs(path: Path) -> np.ndarray | None:
+    """Load camera distortion coefficients from YAML when available."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if not isinstance(data, dict):
+        return None
+
+    dist_raw = None
+    if "distortion_coefficients" in data:
+        dist_raw = data["distortion_coefficients"]
+
+    if dist_raw is None:
+        return None
+
+    dist = np.asarray(dist_raw, dtype=np.float64).reshape(-1, 1)
+
+    if dist.size == 0:
+        return None
+    return dist
 
 
 def _orthonormalize_rotation(r: np.ndarray) -> np.ndarray:
@@ -75,7 +85,7 @@ def _orthonormalize_rotation(r: np.ndarray) -> np.ndarray:
 
 def _write_dict_rows(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
     """Write dict rows to a CSV with explicit headers."""
-    with open(path, "w", encoding="utf-8", newline="") as f:
+    with open(path, 'w', encoding = 'utf-8', newline ='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -91,7 +101,7 @@ def _safe_mean(values: list[float]) -> float:
 
 def _strip_row_keys(row: dict[str, str]) -> dict[str, str]:
     """Normalize CSV keys by trimming leading/trailing spaces."""
-    return {str(k).strip(): v for k, v in row.items() if k is not None}
+    return {str(k):v for k,v in row.items()}
 
 
 def _get_first_key(row: dict[str, str], candidates: list[str]) -> str | None:
@@ -105,81 +115,31 @@ def _get_first_key(row: dict[str, str], candidates: list[str]) -> str | None:
 
 
 def _load_gt_positions_for_frames(gt_csv: Path, frame_paths: list[Path]) -> dict[int, np.ndarray] | None:
-    """Load GT positions keyed by frame index.
-
-    Supported formats:
-    1) frame-index format: columns include frame, tx, ty, tz
-    2) timestamp format (e.g., EuRoC): columns include timestamp + p_RS_R_*
-       In this case, frame index is aligned by nearest timestamp parsed from
-       the image filename stem.
-    """
+    """Load GT positions keyed by frame index using exact timestamp matching."""
     if not gt_csv.exists():
         return None
 
-    frame_positions: dict[int, np.ndarray] = {}
-    ts_positions: list[tuple[int, np.ndarray]] = []
-    mode: str | None = None
+    ts_to_pos: dict[int, np.ndarray] = {}
 
     with open(gt_csv, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for raw_row in reader:
             row = _strip_row_keys(raw_row)
-
-            frame_str = _get_first_key(row, ["frame"])
-            tx = _get_first_key(row, ["tx"])
-            ty = _get_first_key(row, ["ty"])
-            tz = _get_first_key(row, ["tz"])
-
-            if frame_str is not None and tx is not None and ty is not None and tz is not None:
-                if mode is None:
-                    mode = "frame"
-                if mode == "frame":
-                    frame_positions[int(frame_str)] = np.array([float(tx), float(ty), float(tz)], dtype=np.float64)
-                continue
-
             ts = _get_first_key(row, ["#timestamp", "#timestamp [ns]", "timestamp", "timestamp [ns]"])
             px = _get_first_key(row, ["p_RS_R_x [m]", "p_RS_R_x"])
             py = _get_first_key(row, ["p_RS_R_y [m]", "p_RS_R_y"])
             pz = _get_first_key(row, ["p_RS_R_z [m]", "p_RS_R_z"])
-            if ts is not None and px is not None and py is not None and pz is not None:
-                if mode is None:
-                    mode = "timestamp"
-                if mode == "timestamp":
-                    ts_positions.append((int(ts), np.array([float(px), float(py), float(pz)], dtype=np.float64)))
+            if ts is None or px is None or py is None or pz is None:
+                continue
+            ts_to_pos[int(ts)] = np.array([float(px), float(py), float(pz)], dtype=np.float64)
 
-    if mode == "frame" and frame_positions:
-        return frame_positions
+    if not ts_to_pos:
+        return None
 
-    if mode == "timestamp" and ts_positions:
-        frame_timestamps: list[int] = []
-        for path in frame_paths:
-            try:
-                frame_timestamps.append(int(path.stem))
-            except ValueError:
-                return None
-
-        gt_ts = np.asarray([item[0] for item in ts_positions], dtype=np.int64)
-        gt_pos = np.asarray([item[1] for item in ts_positions], dtype=np.float64)
-        order = np.argsort(gt_ts)
-        gt_ts = gt_ts[order]
-        gt_pos = gt_pos[order]
-
-        aligned: dict[int, np.ndarray] = {}
-        for frame_idx, ts in enumerate(frame_timestamps):
-            right = int(np.searchsorted(gt_ts, ts, side="left"))
-            if right <= 0:
-                best = 0
-            elif right >= len(gt_ts):
-                best = len(gt_ts) - 1
-            else:
-                left = right - 1
-                left_gap = abs(int(ts) - int(gt_ts[left]))
-                right_gap = abs(int(gt_ts[right]) - int(ts))
-                best = left if left_gap <= right_gap else right
-            aligned[frame_idx] = gt_pos[best]
-        return aligned
-
-    return None
+    aligned: dict[int, np.ndarray] = {}
+    for frame_idx, path in enumerate(frame_paths):
+        aligned[frame_idx] = ts_to_pos[int(path.stem)]
+    return aligned
 
 
 def _write_frame_index_csv(path: Path, frame_paths: list[Path]) -> None:
@@ -220,6 +180,8 @@ def run_monocular_vo(
     max_features: int = 1500,
     ratio_test: float = 0.75,
     min_inliers: int = 20,
+    min_parallax_px: float = 1.0,
+    frame_step: int = 1,
 ) -> dict:
     """Run frame-to-frame monocular VO and export trajectory/metrics CSVs.
 
@@ -231,7 +193,10 @@ def run_monocular_vo(
     intrinsics_yaml = Path(intrinsics_yaml)
     gt_csv_path = Path(gt_csv) if gt_csv is not None else None
 
-    frame_paths = sorted(frames_dir.glob("*.png"))
+    frame_paths_all = sorted(frames_dir.glob("*.png"))
+    if frame_step < 1:
+        raise ValueError(f"frame_step must be >= 1, got {frame_step}")
+    frame_paths = frame_paths_all[::frame_step]
     if len(frame_paths) < 2:
         raise ValueError(f"Need at least 2 frames, got {len(frame_paths)} from {frames_dir}")
 
@@ -243,6 +208,7 @@ def run_monocular_vo(
     aligned_gt_csv = out_dir / "gt_poses_aligned.csv"
 
     k = _read_intrinsics(intrinsics_yaml)
+    dist_coeffs = _read_distortion_coeffs(intrinsics_yaml)
     gt_positions = _load_gt_positions_for_frames(gt_csv_path, frame_paths) if gt_csv_path is not None else None
 
     _write_frame_index_csv(frame_index_csv, frame_paths)
@@ -266,6 +232,7 @@ def run_monocular_vo(
             "good_matches": 0,
             "pose_inliers": 0,
             "scale": "0.00000000",
+            "median_parallax_px": "0.00000000",
         }
     ]
     pair_rows: list[dict] = []
@@ -319,6 +286,7 @@ def run_monocular_vo(
         essential_inliers = 0
         pose_inliers = 0
         scale = 0.0
+        median_parallax_px = 0.0
         status = "success"
 
         if des1 is None or des2 is None or kp_prev < 8 or kp_curr < 8:
@@ -340,14 +308,29 @@ def run_monocular_vo(
                 pts1 = np.float32([kps1[m.queryIdx].pt for m in good_matches])
                 pts2 = np.float32([kps2[m.trainIdx].pt for m in good_matches])
 
-                e, e_mask = cv2.findEssentialMat(
-                    pts1,
-                    pts2,
-                    cameraMatrix=k,
-                    method=cv2.RANSAC,
-                    prob=0.999,
-                    threshold=1.0,
-                )
+                if dist_coeffs is not None:
+                    pts1_norm = cv2.undistortPoints(pts1.reshape(-1, 1, 2), k, dist_coeffs).reshape(-1, 2)
+                    pts2_norm = cv2.undistortPoints(pts2.reshape(-1, 1, 2), k, dist_coeffs).reshape(-1, 2)
+                    e, e_mask = cv2.findEssentialMat(
+                        pts1_norm,
+                        pts2_norm,
+                        focal=1.0,
+                        pp=(0.0, 0.0),
+                        method=cv2.RANSAC,
+                        prob=0.999,
+                        threshold=0.0015,
+                    )
+                else:
+                    pts1_norm = pts1
+                    pts2_norm = pts2
+                    e, e_mask = cv2.findEssentialMat(
+                        pts1_norm,
+                        pts2_norm,
+                        cameraMatrix=k,
+                        method=cv2.RANSAC,
+                        prob=0.999,
+                        threshold=1.0,
+                    )
                 if e is None or e_mask is None:
                     status = "failure"
                     reason = "findEssentialMat failed"
@@ -357,13 +340,38 @@ def run_monocular_vo(
                         e = e[:3, :3]
 
                     essential_inliers = int(e_mask.ravel().astype(bool).sum())
-                    pose_inliers, r_rel, t_rel, _ = cv2.recoverPose(e, pts1, pts2, k, mask=e_mask)
+                    if dist_coeffs is not None:
+                        pose_inliers, r_rel, t_rel, pose_mask = cv2.recoverPose(
+                            e,
+                            pts1_norm,
+                            pts2_norm,
+                            np.eye(3, dtype=np.float64),
+                            mask=e_mask,
+                        )
+                    else:
+                        pose_inliers, r_rel, t_rel, pose_mask = cv2.recoverPose(e, pts1_norm, pts2_norm, k, mask=e_mask)
                     pose_inliers = int(pose_inliers)
 
                     if pose_inliers < min_inliers:
                         status = "failure"
                         reason = f"recoverPose inliers too low ({pose_inliers} < {min_inliers})"
                     else:
+                        if pose_mask is None:
+                            status = "failure"
+                            reason = "recoverPose returned empty inlier mask"
+                        else:
+                            inlier_mask = pose_mask.ravel().astype(bool)
+                            if int(inlier_mask.sum()) < min_inliers:
+                                status = "failure"
+                                reason = f"recoverPose valid mask too low ({int(inlier_mask.sum())} < {min_inliers})"
+                            else:
+                                flow = np.linalg.norm(pts2[inlier_mask] - pts1[inlier_mask], axis=1)
+                                median_parallax_px = float(np.median(flow)) if flow.size > 0 else 0.0
+                                if median_parallax_px < min_parallax_px:
+                                    status = "failure"
+                                    reason = f"Parallax too low ({median_parallax_px:.3f} px < {min_parallax_px:.3f} px)"
+
+                    if status == "success":
                         if gt_positions is not None and (idx - 1) in gt_positions and idx in gt_positions:
                             scale = float(np.linalg.norm(gt_positions[idx] - gt_positions[idx - 1]))
                         else:
@@ -392,6 +400,7 @@ def run_monocular_vo(
                 "essential_inliers": essential_inliers,
                 "pose_inliers": pose_inliers,
                 "scale": f"{scale:.8f}",
+                "median_parallax_px": f"{median_parallax_px:.8f}",
                 "status": status,
                 "reason": reason,
             }
@@ -407,13 +416,14 @@ def run_monocular_vo(
                 "good_matches": len(good_matches),
                 "pose_inliers": pose_inliers,
                 "scale": f"{scale:.8f}",
+                "median_parallax_px": f"{median_parallax_px:.8f}",
             }
         )
         good_matches_list.append(float(len(good_matches)))
 
     _write_dict_rows(
         est_csv,
-        ["frame", "tx", "ty", "tz", "status", "reason", "good_matches", "pose_inliers", "scale"],
+        ["frame", "tx", "ty", "tz", "status", "reason", "good_matches", "pose_inliers", "scale", "median_parallax_px"],
         est_rows,
     )
     _write_dict_rows(
@@ -427,6 +437,7 @@ def run_monocular_vo(
             "essential_inliers",
             "pose_inliers",
             "scale",
+            "median_parallax_px",
             "status",
             "reason",
         ],
@@ -438,12 +449,15 @@ def run_monocular_vo(
     num_success = num_pairs - num_failed
 
     stats: dict[str, float | int | str] = {
+        "num_frames_total": len(frame_paths_all),
+        "frame_step": frame_step,
         "num_frames": len(frame_paths),
         "num_pairs": num_pairs,
         "success_pairs": num_success,
         "failed_pairs": num_failed,
         "mean_good_matches": _safe_mean(good_matches_list),
         "gt_scale_used": int(gt_positions is not None),
+        "distortion_compensated": int(dist_coeffs is not None),
     }
 
     if gt_positions is not None and len(gt_positions) > 0:
@@ -490,6 +504,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_features", type=int, default=1500, help="ORB max features.")
     parser.add_argument("--ratio_test", type=float, default=0.75, help="Lowe ratio threshold.")
     parser.add_argument("--min_inliers", type=int, default=20, help="Minimum inliers accepted from recoverPose.")
+    parser.add_argument(
+        "--min_parallax_px",
+        type=float,
+        default=1.0,
+        help="Minimum median pixel parallax on pose inliers to accept a frame-to-frame update.",
+    )
+    parser.add_argument("--frame_step", type=int, default=1, help="Use every Nth frame from frames_dir.")
     return parser
 
 
@@ -502,6 +523,8 @@ if __name__ == "__main__":
         max_features=args.max_features,
         ratio_test=args.ratio_test,
         min_inliers=args.min_inliers,
+        min_parallax_px=args.min_parallax_px,
+        frame_step=args.frame_step,
     )
     print("VO completed:")
     print(f"  est_csv: {result['est_csv']}")

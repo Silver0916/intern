@@ -43,8 +43,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 
     parser.add_argument("--max_features", type=int, default=2000, help="ORB max features.")
-    parser.add_argument("--ratio_test", type=float, default=0.8, help="Lowe ratio threshold.")
-    parser.add_argument("--min_inliers", type=int, default=10, help="Minimum accepted pose inliers.")
+    parser.add_argument("--ratio_test", type=float, default=0.75, help="Lowe ratio threshold.")
+    parser.add_argument("--min_inliers", type=int, default=20, help="Minimum accepted pose inliers.")
+    parser.add_argument(
+        "--min_parallax_px",
+        type=float,
+        default=1.0,
+        help="Minimum median pixel parallax on pose inliers to accept a frame-to-frame update.",
+    )
+    parser.add_argument("--frame_step", type=int, default=1, help="Use every Nth frame from --frames_dir.")
     return parser
 
 
@@ -87,6 +94,8 @@ def main() -> None:
         max_features=args.max_features,
         ratio_test=args.ratio_test,
         min_inliers=args.min_inliers,
+        min_parallax_px=args.min_parallax_px,
+        frame_step=args.frame_step,
     )
 
     # Stage 3: visualize estimated trajectory against GT.

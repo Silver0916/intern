@@ -23,6 +23,37 @@ def _load_positions(csv_path: Path) -> dict[int, np.ndarray]:
     return positions
 
 
+def _align_sim3(src_xyz: np.ndarray, dst_xyz: np.ndarray) -> np.ndarray:
+    """Align src trajectory to dst trajectory with Umeyama similarity transform."""
+    if src_xyz.shape != dst_xyz.shape or src_xyz.ndim != 2 or src_xyz.shape[1] != 3:
+        raise ValueError(f"Expected matching Nx3 arrays, got {src_xyz.shape} and {dst_xyz.shape}")
+
+    n = src_xyz.shape[0]
+    if n < 3:
+        raise ValueError("Need at least 3 points for Sim(3) alignment.")
+
+    src_mean = np.mean(src_xyz, axis=0)
+    dst_mean = np.mean(dst_xyz, axis=0)
+    src_centered = src_xyz - src_mean
+    dst_centered = dst_xyz - dst_mean
+
+    src_var = float(np.sum(src_centered**2) / n)
+    if src_var <= 1e-12:
+        raise ValueError("Degenerate source trajectory variance; cannot align.")
+
+    cov = (dst_centered.T @ src_centered) / n
+    u, d, vt = np.linalg.svd(cov)
+    s_mat = np.eye(3, dtype=np.float64)
+    if np.linalg.det(u) * np.linalg.det(vt) < 0:
+        s_mat[-1, -1] = -1.0
+
+    r = u @ s_mat @ vt
+    scale = float(np.trace(np.diag(d) @ s_mat) / src_var)
+    t = dst_mean - scale * (r @ src_mean)
+
+    return (scale * (r @ src_xyz.T)).T + t
+
+
 def render_trajectory_plots(gt_csv: Path, est_csv: Path, out_dir: Path) -> dict:
     """Render top-view, 3D trajectory, and position-error plots."""
     gt_csv = Path(gt_csv)
@@ -39,7 +70,8 @@ def render_trajectory_plots(gt_csv: Path, est_csv: Path, out_dir: Path) -> dict:
     # Shift GT so that frame-0 is origin, matching VO initialization.
     gt0 = gt_pos[common_frames[0]]
     gt_xyz = np.asarray([gt_pos[idx] - gt0 for idx in common_frames], dtype=np.float64)
-    est_xyz = np.asarray([est_pos[idx] for idx in common_frames], dtype=np.float64)
+    est_xyz_raw = np.asarray([est_pos[idx] for idx in common_frames], dtype=np.float64)
+    est_xyz = _align_sim3(est_xyz_raw, gt_xyz)
     errors = np.linalg.norm(est_xyz - gt_xyz, axis=1)
 
     plot_2d = out_dir / "trajectory_2d.png"
@@ -51,7 +83,7 @@ def render_trajectory_plots(gt_csv: Path, est_csv: Path, out_dir: Path) -> dict:
     ax = fig.add_subplot(111)
     ax.plot(gt_xyz[:, 0], gt_xyz[:, 2], label="GT", linewidth=2.0)
     ax.plot(est_xyz[:, 0], est_xyz[:, 2], label="Estimated", linewidth=1.8)
-    ax.set_title("Top-View Trajectory (X-Z)")
+    ax.set_title("Top-View Trajectory (X-Z, Sim(3) Aligned)")
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Z (m)")
     ax.grid(True, alpha=0.35)
@@ -65,7 +97,7 @@ def render_trajectory_plots(gt_csv: Path, est_csv: Path, out_dir: Path) -> dict:
     ax = fig.add_subplot(111, projection="3d")
     ax.plot(gt_xyz[:, 0], gt_xyz[:, 1], gt_xyz[:, 2], label="GT", linewidth=2.0)
     ax.plot(est_xyz[:, 0], est_xyz[:, 1], est_xyz[:, 2], label="Estimated", linewidth=1.8)
-    ax.set_title("3D Trajectory")
+    ax.set_title("3D Trajectory (Sim(3) Aligned)")
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Z (m)")
@@ -78,7 +110,7 @@ def render_trajectory_plots(gt_csv: Path, est_csv: Path, out_dir: Path) -> dict:
     fig = plt.figure(figsize=(9, 4.5))
     ax = fig.add_subplot(111)
     ax.plot(common_frames, errors, color="tab:red", linewidth=1.8)
-    ax.set_title("Position Error vs Frame")
+    ax.set_title("Position Error vs Frame (After Sim(3) Alignment)")
     ax.set_xlabel("Frame")
     ax.set_ylabel("Euclidean Error (m)")
     ax.grid(True, alpha=0.35)
