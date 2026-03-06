@@ -177,9 +177,10 @@ def est_vo_pair(
     curr_image_dir: Path,
     next_image_dir: Path,
     max_features: int = 2000,
-    ratio_test: float = 0.75,
-    min_inliers: int = 20,
-    min_parallax_px: float = 1.0,
+    ratio_test: float = 0.7,
+    min_inliers: int = 15,
+    min_parallax_px: float = 0.5,
+    fallback_scale: float = 1.0,
 ) -> dict:
     """Run monocular VO on a pair of images with optional GT scale.
 
@@ -369,28 +370,21 @@ def est_vo_pair(
     # 2) GT translation magnitude if both GT poses exist
     # 3) otherwise mark as failure (unscaled)
     scale = None
+    scale_source = "none"
     if (curr_velo is not None) and (next_velo is not None):
         # Average speed * delta_t as a rough translation magnitude
         scale = float(0.5 * (np.linalg.norm(curr_velo) + np.linalg.norm(next_velo)) * delta_t)
+        scale_source = "velocity"
     elif (curr_gt_poses is not None) and (next_gt_poses is not None):
         scale = float(np.linalg.norm(next_gt_poses - curr_gt_poses))
+        scale_source = "gt"
 
-    if scale is None:
-        return {
-            "status": "failure",
-            "reason": "no velocity and no GT scale",
-            "curr_ts": frame_i,
-            "next_ts": frame_j,
-            "good_matches": len(good_matches),
-            "essential_inliers": essential_inliers,
-            "pose_inliers": int(pose_inliers),
-            "median_parallax_px": median_parallax_px_val,
-            "scale": 0.0,
-            "kpts1_inliers": src_pts[inlier_sel].tolist(),
-            "kpts2_inliers": tgt_pts[inlier_sel].tolist(),
-            "R": R.tolist(),
-            "t": t.tolist(),
-        }
+    if scale is None or (not np.isfinite(scale)) or float(scale) <= 1e-12:
+        scale = float(fallback_scale)
+        scale_source = "fallback"
+        if (not np.isfinite(scale)) or float(scale) <= 1e-12:
+            scale = 1.0
+            scale_source = "unit"
 
     t_scaled = scale * t
     return {
@@ -402,6 +396,7 @@ def est_vo_pair(
         "pose_inliers": int(pose_inliers),
         "median_parallax_px": median_parallax_px_val,
         "scale": float(scale),
+        "scale_source": scale_source,
         "kpts1_inliers": src_pts[inlier_sel].tolist(),
         "kpts2_inliers": tgt_pts[inlier_sel].tolist(),
         "R": R.tolist(),
@@ -457,9 +452,9 @@ def run_monocular_vo(
     intrinsics_yaml: Path,
     gt_csv: Path | None = None,
     max_features: int = 2000,
-    ratio_test: float = 0.75,
-    min_inliers: int = 20,
-    min_parallax_px: float = 1.0,
+    ratio_test: float = 0.7,
+    min_inliers: int = 15,
+    min_parallax_px: float = 0.5,
     frame_step: int = 1,
 ) -> dict:
     """Run sequence VO using est_vo_pair and write Task2-compatible CSV outputs."""
@@ -526,6 +521,8 @@ def run_monocular_vo(
     pair_rows: list[dict] = []
     failure_reasons: list[str] = []
     good_matches_list: list[float] = []
+    scale_source_counter: Counter[str] = Counter()
+    last_valid_scale = 1.0
 
     for idx in range(1, len(frame_paths)):
         pair_result = est_vo_pair(
@@ -539,6 +536,7 @@ def run_monocular_vo(
             ratio_test=ratio_test,
             min_inliers=min_inliers,
             min_parallax_px=min_parallax_px,
+            fallback_scale=last_valid_scale,
         )
 
         status = str(pair_result["status"])
@@ -548,8 +546,12 @@ def run_monocular_vo(
         pose_inliers = int(pair_result.get("pose_inliers", 0))
         median_parallax_px_val = float(pair_result.get("median_parallax_px", 0.0))
         scale = float(pair_result.get("scale", 0.0))
+        scale_source = str(pair_result.get("scale_source", "none"))
 
         if status == "success":
+            if np.isfinite(scale) and scale > 1e-12:
+                last_valid_scale = scale
+            scale_source_counter[scale_source] += 1
             r_rel = np.asarray(pair_result["R"], dtype=np.float64).reshape(3, 3)
             t_rel = np.asarray(pair_result["t"], dtype=np.float64).reshape(3, 1)
             r_cw = _orthonormalize_rotation(r_rel @ r_cw)
@@ -622,6 +624,7 @@ def run_monocular_vo(
         "mean_good_matches": _safe_mean(good_matches_list),
         "gt_scale_used": int(len(gt_poses) > 0),
         "distortion_compensated": int(dist_coeffs is not None),
+        "last_valid_scale": float(last_valid_scale),
     }
 
     if aligned_gt_positions:
@@ -642,6 +645,10 @@ def run_monocular_vo(
                 stats["final_position_error"] = float(errors[-1])
 
     reason_counts = Counter(failure_reasons)
+    if scale_source_counter:
+        stats["scale_source_counts"] = "; ".join(f"{k}:{v}" for k, v in sorted(scale_source_counter.items()))
+    else:
+        stats["scale_source_counts"] = ""
     if reason_counts:
         stats["failure_reason_counts"] = "; ".join(f"{k}:{v}" for k, v in sorted(reason_counts.items()))
     else:
@@ -666,12 +673,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--intrinsics_yaml", type=str, required=True, help="Camera intrinsics YAML path.")
     parser.add_argument("--gt_csv", type=str, default=None, help="GT poses CSV path for scale and metrics.")
     parser.add_argument("--max_features", type=int, default=2000, help="ORB max features.")
-    parser.add_argument("--ratio_test", type=float, default=0.75, help="Lowe ratio threshold.")
-    parser.add_argument("--min_inliers", type=int, default=20, help="Minimum inliers accepted from recoverPose.")
+    parser.add_argument("--ratio_test", type=float, default=0.7, help="Lowe ratio threshold.")
+    parser.add_argument("--min_inliers", type=int, default=15, help="Minimum inliers accepted from recoverPose.")
     parser.add_argument(
         "--min_parallax_px",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Minimum median pixel parallax on pose inliers to accept a frame-to-frame update.",
     )
     parser.add_argument("--frame_step", type=int, default=1, help="Use every Nth frame from frames_dir.")

@@ -43,12 +43,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 
     parser.add_argument("--max_features", type=int, default=2000, help="ORB max features.")
-    parser.add_argument("--ratio_test", type=float, default=0.75, help="Lowe ratio threshold.")
-    parser.add_argument("--min_inliers", type=int, default=20, help="Minimum accepted pose inliers.")
+    parser.add_argument("--ratio_test", type=float, default=0.7, help="Lowe ratio threshold.")
+    parser.add_argument("--min_inliers", type=int, default=15, help="Minimum accepted pose inliers.")
     parser.add_argument(
         "--min_parallax_px",
         type=float,
-        default=1.0,
+        default=0.5,
         help="Minimum median pixel parallax on pose inliers to accept a frame-to-frame update.",
     )
     parser.add_argument("--frame_step", type=int, default=1, help="Use every Nth frame from --frames_dir.")
