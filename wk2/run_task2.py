@@ -91,6 +91,7 @@ def main() -> None:
         frames_dir=frames_dir,
         intrinsics_yaml=intrinsics_yaml,
         gt_csv=gt_csv,
+        out_dir=output_dir,
         max_features=args.max_features,
         ratio_test=args.ratio_test,
         min_inliers=args.min_inliers,

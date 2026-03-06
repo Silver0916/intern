@@ -451,6 +451,7 @@ def run_monocular_vo(
     frames_dir: Path,
     intrinsics_yaml: Path,
     gt_csv: Path | None = None,
+    out_dir: Path | None = None,
     max_features: int = 2000,
     ratio_test: float = 0.7,
     min_inliers: int = 15,
@@ -469,7 +470,8 @@ def run_monocular_vo(
     if len(frame_paths) < 2:
         raise ValueError(f"Need at least 2 frames, got {len(frame_paths)} from {frames_dir}")
 
-    out_dir = frames_dir.parent
+    out_dir = Path(out_dir) if out_dir is not None else frames_dir.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
     est_csv = out_dir / "estimated_poses.csv"
     pair_csv = out_dir / "vo_pair_metrics.csv"
     summary_csv = out_dir / "metrics_summary.csv"
@@ -672,6 +674,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frames_dir", type=str, required=True, help="Directory containing frame images (*.png/*.jpg).")
     parser.add_argument("--intrinsics_yaml", type=str, required=True, help="Camera intrinsics YAML path.")
     parser.add_argument("--gt_csv", type=str, default=None, help="GT poses CSV path for scale and metrics.")
+    parser.add_argument("--out_dir", type=str, default=None, help="Directory for CSV outputs.")
     parser.add_argument("--max_features", type=int, default=2000, help="ORB max features.")
     parser.add_argument("--ratio_test", type=float, default=0.7, help="Lowe ratio threshold.")
     parser.add_argument("--min_inliers", type=int, default=15, help="Minimum inliers accepted from recoverPose.")
@@ -691,6 +694,7 @@ if __name__ == "__main__":
         frames_dir=Path(args.frames_dir),
         intrinsics_yaml=Path(args.intrinsics_yaml),
         gt_csv=Path(args.gt_csv) if args.gt_csv else None,
+        out_dir=Path(args.out_dir) if args.out_dir else None,
         max_features=args.max_features,
         ratio_test=args.ratio_test,
         min_inliers=args.min_inliers,
