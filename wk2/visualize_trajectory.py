@@ -60,25 +60,23 @@ def _align_sim3(src_xyz: np.ndarray, dst_xyz: np.ndarray) -> np.ndarray:
         raise ValueError("Need at least 3 points for Sim(3) alignment.")
 
     src_mean = np.mean(src_xyz, axis=0)
-    dst_mean = np.mean(dst_xyz, axis=0)
+    dst_mean = np.mean(dst_xyz, axis = 0)
     src_centered = src_xyz - src_mean
     dst_centered = dst_xyz - dst_mean
 
-    src_var = float(np.sum(src_centered**2) / n)
-    if src_var <= 1e-12:
-        raise ValueError("Degenerate source trajectory variance; cannot align.")
-
-    cov = (dst_centered.T @ src_centered) / n
-    u, d, vt = np.linalg.svd(cov)
-    s_mat = np.eye(3, dtype=np.float64)
-    if np.linalg.det(u) * np.linalg.det(vt) < 0:
-        s_mat[-1, -1] = -1.0
-
-    r = u @ s_mat @ vt
-    scale = float(np.trace(np.diag(d) @ s_mat) / src_var)
-    t = dst_mean - scale * (r @ src_mean)
-
-    return (scale * (r @ src_xyz.T)).T + t
+    cov = dst_centered.T @ src_centered / n
+    U, S, Vt = np.linalg.svd(cov)
+    var_src = np.sum(src_centered ** 2) /n
+    R = U @ Vt
+    if np.linalg.det(R) <0:
+        D = np.diag([1, 1, -1])
+        Vt[-1, :] *= -1
+        R = U @ Vt
+        scale = np.trace(np.diag(S) @ D) / var_src
+    else:
+        scale = np.trace(np.diag(S)) / var_src
+    t = dst_mean - scale * R @ src_mean.T
+    return scale * R @ src_xyz.T + t
 
 
 def render_trajectory_plots(gt_csv: Path, est_csv: Path, out_dir: Path) -> dict:
