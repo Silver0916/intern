@@ -1,5 +1,5 @@
 {
-  "python.defaultInterpreterPath": "D:\\conda_envs\\paf_predict\\python.exe",
+  "python.defaultInterpreterPath": "/mnt/d/projs/intern/wk3/.venv/bin/python",
   "python.terminal.activateEnvironment": true,
 
   "terminal.integrated.profiles.windows": {
