@@ -70,13 +70,12 @@ def _align_sim3(src_xyz: np.ndarray, dst_xyz: np.ndarray) -> np.ndarray:
     R = U @ Vt
     if np.linalg.det(R) <0:
         D = np.diag([1, 1, -1])
-        Vt[-1, :] *= -1
-        R = U @ Vt
+        R = U @ D @ Vt
         scale = np.trace(np.diag(S) @ D) / var_src
     else:
         scale = np.trace(np.diag(S)) / var_src
-    t = dst_mean - scale * R @ src_mean.T
-    return scale * R @ src_xyz.T + t
+    t = dst_mean - scale * R @ src_mean
+    return (scale * R @ src_xyz.T).T + t
 
 
 def render_trajectory_plots(gt_csv: Path, est_csv: Path, out_dir: Path) -> dict:
