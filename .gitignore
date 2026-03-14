@@ -9,3 +9,13 @@
 /wk3/.venv/
 /wk2/wk2.zip
 /wk3/data/
+/wk3/runs/
+/wk3/submission/
+/wk3/models/
+wk3/tmp_calib.cache
+wk3/tmp_fp32.engine
+wk3/tmp_int8_calib.engine
+wk3/tmp_int8_qdq_sym.onnx
+wk3/tmp_int8_qdq.onnx
+yolov8n.onnx
+yolov8n.pt
