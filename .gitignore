@@ -19,3 +19,20 @@ wk3/tmp_int8_qdq_sym.onnx
 wk3/tmp_int8_qdq.onnx
 yolov8n.onnx
 yolov8n.pt
+wk3/
+wk3_mannual/yolov5su.pt
+/runs/
+
+# wk3_mannual outputs
+wk3_mannual/models/
+wk3_mannual/engines/
+wk3_mannual/results/
+wk3_mannual/report/
+wk3_mannual/data/
+
+# model weights and large binaries
+*.pt
+*.onnx
+*.engine
+*.cache
+*.whl

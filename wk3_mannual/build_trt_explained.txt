@@ -1,0 +1,231 @@
+================================================================
+build_trt_int8_engine.py 逐行解释
+================================================================
+
+----------------------------------------------------------------
+一、TensorRT 构建流程中的核心概念
+----------------------------------------------------------------
+
+Logger（日志器）
+    TensorRT 的日志系统，记录构建过程中的警告、错误、信息。
+    trt.Logger.INFO    → 输出所有信息
+    trt.Logger.WARNING → 只输出警告和错误（更安静）
+
+Builder（构建器）
+    整个 engine 构建过程的入口对象。
+    它负责把 network + config 编译成最终的 engine。
+    类比：Builder 是"编译器"，就像 gcc 把 C 代码编译成可执行文件。
+
+Network（网络定义）
+    描述模型结构的对象，包含所有层、输入、输出的定义。
+    Builder 需要先知道网络长什么样，才能编译它。
+    类比：Network 是"源代码"，描述模型有哪些层、怎么连接。
+
+OnnxParser（ONNX 解析器）
+    把 .onnx 文件的内容读入 Network。
+    ONNX 是一种通用模型格式，Parser 负责把它翻译成 TRT 能理解的 Network。
+
+Config（构建配置）
+    告诉 Builder 用什么方式编译，比如：
+    - 精度（FP32 / FP16 / INT8）
+    - 显存上限
+    - 校准器（INT8 需要）
+    - 优化配置文件
+
+OptimizationProfile（优化配置文件）
+    因为模型导出时用了动态输入尺寸（dynamic=True），
+    TRT 不知道实际推理时输入是多大，需要你告诉它：
+    - min：最小可能的输入尺寸
+    - opt：最常用的输入尺寸（TRT 重点优化这个）
+    - max：最大可能的输入尺寸
+    本项目固定用 640x640，所以三个值一样。
+
+Calibrator（校准器）
+    INT8 量化专用。把 float32 压缩到 int8 需要知道每层数值范围，
+    校准器负责把真实图片喂给网络，让 TRT 统计各层数值分布，
+    找到最优的量化缩放比例，使精度损失最小。
+
+SerializedNetwork（序列化网络）
+    Builder 编译完成后输出的二进制数据，
+    写入文件就是 .engine 文件。
+    类比：编译后的可执行文件（.exe/.out）。
+
+----------------------------------------------------------------
+二、逐行代码解释
+----------------------------------------------------------------
+
+--- imports ---
+
+from pathlib import Path
+    导入路径处理库，用于拼接文件路径。
+
+import torch
+    导入 PyTorch，用于 GPU 内存管理（替代 pycuda）。
+
+import tensorrt as trt
+    导入 TensorRT，核心库。
+
+from utils import preprocess
+    从 utils.py 导入图片预处理函数，校准时用它把图片转成模型输入格式。
+
+
+--- Int8Calibrator 类 ---
+
+class Int8Calibrator(trt.IInt8EntropyCalibrator2):
+    继承 TRT 内置的 INT8 熵校准器基类。
+    "熵校准"是一种量化策略，通过最小化信息熵损失来找最优缩放比例。
+    必须继承这个基类，TRT 才能在构建时自动调用你写的方法。
+
+def __init__(self, image_dir, cache_file):
+    super().__init__()
+        调用父类初始化，TRT 内部需要这个。
+
+    self.images = list(image_dir.glob('*.jpg'))
+        找到校准图片目录下所有 .jpg 文件，存成列表。
+
+    self.cache_file = cache_file
+        校准缓存文件路径。校准一次耗时较长，结果可以缓存，
+        下次直接读缓存，不用重新跑所有图片。
+
+    self.current_index = 0
+        当前喂到第几张图的指针，初始为0。
+
+    self.device_input = torch.zeros((1,3,640,640), dtype=torch.float32).cuda()
+        在 GPU 上提前分配一块固定内存，shape 和模型输入一致。
+        .cuda() 把 tensor 放到 GPU。
+        提前分配是为了每次复用同一块地址，保持 data_ptr() 稳定。
+
+def get_batch_size(self):
+    return 1
+        告诉 TRT 每次校准喂几张图，这里每次喂1张。
+
+def get_batch(self, names):
+    TRT 校准时自动循环调用这个函数，每次要一批图片。
+    names 是输入张量的名字列表，由 TRT 传入，这里不需要用它。
+
+    if self.current_index >= len(self.images): return None
+        所有图片都喂完了，返回 None 通知 TRT 校准结束。
+
+    img = preprocess(self.images[self.current_index])
+        读取并预处理当前图片，得到 shape (1,3,640,640) 的 numpy 数组。
+
+    self.device_input.copy_(torch.from_numpy(img))
+        torch.from_numpy(img)：numpy 转 torch tensor（还在 CPU）
+        .copy_()：把数据从 CPU 复制到 GPU（self.device_input 在 GPU）
+        用 copy_() 而不是 .to() 是为了不改变 GPU 内存地址。
+
+    self.current_index += 1
+        指针后移，下次取下一张图。
+
+    return [self.device_input.data_ptr()]
+        返回 GPU 内存地址（整数）。TRT 通过这个地址直接读 GPU 数据做校准。
+        必须是列表，每个元素对应一个输入张量的 GPU 地址。
+
+def read_calibration_cache(self):
+    if self.cache_file.exists(): return self.cache_file.read_bytes()
+    return None
+        TRT 构建前先调用这个。
+        如果缓存文件存在，直接返回缓存内容，跳过校准步骤（节省时间）。
+        返回 None 表示没有缓存，需要重新校准。
+
+def write_calibration_cache(self, cache):
+    self.cache_file.write_bytes(bytes(cache))
+        校准完成后 TRT 自动调用这个，把校准结果写入文件保存。
+
+
+--- main() 函数 ---
+
+project_root = Path(__file__).resolve().parent.parent
+    __file__ 是当前脚本路径（scripts/build_trt_int8_engine.py）
+    .resolve() 转成绝对路径
+    .parent    → scripts/
+    .parent    → wk3_mannual/（项目根目录）
+
+onnx_path / engine_path / calib_images / cache_file
+    定义各文件路径。
+
+engine_path.parent.mkdir(parents=True, exist_ok=True)
+    确保 engines/ 目录存在，不存在就创建。
+
+logger = trt.Logger(trt.Logger.INFO)
+    创建日志器，INFO 级别会输出构建过程的详细信息。
+
+builder = trt.Builder(logger)
+    创建构建器，传入日志器。
+
+network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    创建网络对象。
+    EXPLICIT_BATCH 标志表示网络的 batch 维度是明确的（不是隐式的）。
+    现代 TRT 要求必须用这个标志。
+    "1 << int(...)" 是把枚举值转成位掩码的写法，TRT API 要求。
+
+parser = trt.OnnxParser(network, logger)
+    创建 ONNX 解析器，绑定到 network，解析结果会填充进 network。
+
+with open(onnx_path, 'rb') as f: parser.parse(f.read())
+    读取 .onnx 文件的二进制内容，解析填入 network。
+    执行完后 network 就包含了完整的模型结构。
+
+config = builder.create_builder_config()
+    创建构建配置对象。
+
+config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
+    设置构建时的显存上限为 1GB（1 << 30 = 1073741824 字节）。
+    TRT 构建过程需要临时显存，这个限制防止占用过多。
+
+config.set_flag(trt.BuilderFlag.INT8)
+    开启 INT8 精度模式，告诉 TRT 用 INT8 量化来构建 engine。
+
+config.int8_calibrator = Int8Calibrator(calib_images, cache_file)
+    绑定校准器。TRT 构建时会自动调用校准器的方法来收集数值分布。
+
+profile = builder.create_optimization_profile()
+    创建优化配置文件，用于处理动态输入尺寸。
+
+input_name = network.get_input(0).name
+    获取网络第一个输入张量的名字（导出时由 ONNX 决定，通常是 "images"）。
+
+profile.set_shape(input_name, (1,3,640,640), (1,3,640,640), (1,3,640,640))
+    设置输入尺寸的范围：(min, opt, max)。
+    三个都一样说明只支持固定的 640x640 输入。
+    opt 是 TRT 重点优化的尺寸，对推理性能影响最大。
+
+config.add_optimization_profile(profile)
+    把优化配置文件加入 config。
+
+serialized = builder.build_serialized_network(network, config)
+    核心步骤：TRT 根据 network 和 config 执行编译优化，生成序列化的 engine。
+    这步最耗时（几分钟），TRT 会：
+    - 运行校准器收集数值分布
+    - 做算子融合、内存优化
+    - 针对当前 GPU 选最优的内核实现
+    返回二进制数据，None 表示构建失败。
+
+if serialized is None: raise RuntimeError(...)
+    构建失败时主动抛出异常，而不是静默失败。
+
+with open(engine_path, 'wb') as f: f.write(serialized)
+    把序列化的 engine 写入 .engine 文件。
+    这个文件只能在生成它的同款 GPU 上使用。
+
+print(f'INT8 engine saved to {engine_path}')
+    输出成功提示。
+
+----------------------------------------------------------------
+三、整体构建流程图
+----------------------------------------------------------------
+
+ONNX 文件
+    │
+    ↓ OnnxParser.parse()
+Network（模型结构）
+    │
+    ├── Config（INT8标志 + 显存限制 + 优化配置文件）
+    │        │
+    │        └── Int8Calibrator（喂图片 → 统计数值分布 → 写缓存）
+    │
+    ↓ Builder.build_serialized_network()
+SerializedNetwork（二进制）
+    │
+    ↓ 写文件
+yolov5su_int8.engine（最终产物）
