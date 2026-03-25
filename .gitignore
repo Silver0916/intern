@@ -22,6 +22,7 @@ yolov8n.pt
 wk3/
 wk3_mannual/yolov5su.pt
 /runs/
+wk4/output/
 
 # wk3_mannual outputs
 wk3_mannual/models/

@@ -49,8 +49,7 @@ def main():
         parser.parse(f.read())
 
     config = builder.create_builder_config()
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
-
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1<<30)  # 1GB workspace
     config.set_flag(trt.BuilderFlag.INT8)
     config.int8_calibrator = Int8Calibrator(calib_images, cache_file)
 
@@ -61,11 +60,10 @@ def main():
 
     serialized = builder.build_serialized_network(network, config)
     if serialized is None:
-        raise RuntimeError('Failed to build engine')
-    
+        raise RuntimeError("Failed to build the engine.")
     with open(engine_path, 'wb') as f:
         f.write(serialized)
-    print(f'INT8 engine saved to {engine_path}')
+    print(f"INT8 engine saved to: {engine_path}")
 
 if __name__ == '__main__':
     main()
